@@ -6,7 +6,7 @@ import {
   getAllLibraries,
   scanLibrary,
 } from '@immich/sdk';
-import { existsSync, rmdirSync } from 'node:fs';
+import { cpSync, existsSync, readdirSync } from 'node:fs';
 import { Socket } from 'socket.io-client';
 import { userDto, uuidDto } from 'src/fixtures';
 import { errorDto } from 'src/responses';
@@ -33,14 +33,12 @@ describe('/library', () => {
 
   afterAll(() => {
     utils.disconnectWebsocket(websocket);
+    utils.deleteTempFolder();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     utils.resetEvents();
-    const tempDir = `${testAssetDir}/temp`;
-    if (existsSync(tempDir)) {
-      rmdirSync(tempDir, { recursive: true });
-    }
+    utils.deleteTempFolder();
     utils.createImageFile(`${testAssetDir}/temp/directoryA/assetA.png`);
     utils.createImageFile(`${testAssetDir}/temp/directoryB/assetB.png`);
   });
@@ -357,95 +355,6 @@ describe('/library', () => {
     });
   });
 
-  describe('DELETE /library/:id', () => {
-    it('should require authentication', async () => {
-      const { status, body } = await request(app).delete(`/library/${uuidDto.notFound}`);
-
-      expect(status).toBe(401);
-      expect(body).toEqual(errorDto.unauthorized);
-    });
-
-    it('should not delete the last upload library', async () => {
-      const libraries = await getAllLibraries(
-        { $type: LibraryType.Upload },
-        { headers: asBearerAuth(admin.accessToken) },
-      );
-
-      const adminLibraries = libraries.filter((library) => library.ownerId === admin.userId);
-      expect(adminLibraries.length).toBeGreaterThanOrEqual(1);
-      const lastLibrary = adminLibraries.pop() as LibraryResponseDto;
-
-      // delete all but the last upload library
-      for (const library of adminLibraries) {
-        const { status } = await request(app)
-          .delete(`/library/${library.id}`)
-          .set('Authorization', `Bearer ${admin.accessToken}`);
-        expect(status).toBe(204);
-      }
-
-      const { status, body } = await request(app)
-        .delete(`/library/${lastLibrary.id}`)
-        .set('Authorization', `Bearer ${admin.accessToken}`);
-
-      expect(body).toEqual(errorDto.noDeleteUploadLibrary);
-      expect(status).toBe(400);
-    });
-
-    it('should delete an external library', async () => {
-      const library = await utils.createLibrary(admin.accessToken, {
-        ownerId: admin.userId,
-        type: LibraryType.External,
-      });
-
-      const { status, body } = await request(app)
-        .delete(`/library/${library.id}`)
-        .set('Authorization', `Bearer ${admin.accessToken}`);
-
-      expect(status).toBe(204);
-      expect(body).toEqual({});
-
-      const libraries = await getAllLibraries({}, { headers: asBearerAuth(admin.accessToken) });
-      expect(libraries).not.toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            id: library.id,
-          }),
-        ]),
-      );
-    });
-
-    it('should delete an external library with assets', async () => {
-      const library = await utils.createLibrary(admin.accessToken, {
-        ownerId: admin.userId,
-        type: LibraryType.External,
-        importPaths: [`${testAssetDirInternal}/temp`],
-      });
-
-      await scan(admin.accessToken, library.id);
-      await utils.waitForWebsocketEvent({ event: 'assetUpload', total: 2 });
-
-      const { status, body } = await request(app)
-        .delete(`/library/${library.id}`)
-        .set('Authorization', `Bearer ${admin.accessToken}`);
-
-      expect(status).toBe(204);
-      expect(body).toEqual({});
-
-      const libraries = await getAllLibraries({}, { headers: asBearerAuth(admin.accessToken) });
-      expect(libraries).not.toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            id: library.id,
-          }),
-        ]),
-      );
-
-      // ensure no files get deleted
-      expect(existsSync(`${testAssetDir}/temp/directoryA/assetA.png`)).toBe(true);
-      expect(existsSync(`${testAssetDir}/temp/directoryB/assetB.png`)).toBe(true);
-    });
-  });
-
   describe('GET /library/:id/statistics', () => {
     it('should require authentication', async () => {
       const { status, body } = await request(app).get(`/library/${uuidDto.notFound}/statistics`);
@@ -550,6 +459,51 @@ describe('/library', () => {
 
       expect(newAssets.count).toBe(3);
     });
+
+    it('should offline missing files', async () => {
+      cpSync(`${testAssetDir}/albums/nature`, `${testAssetDir}/temp`, {
+        recursive: true,
+      });
+      console.log(readdirSync(`${testAssetDir}/temp`));
+
+      const library = await utils.createLibrary(admin.accessToken, {
+        ownerId: admin.userId,
+        type: LibraryType.External,
+        importPaths: [`${testAssetDirInternal}/temp`],
+      });
+
+      await scan(admin.accessToken, library.id, { refreshAllFiles: true });
+      // await setTimeout(8000);
+      await utils.waitForQueueFinish(admin.accessToken, 'library');
+      // await utils.waitForQueueFinish(admin.accessToken, 'metadataExtraction');
+      // await utils.waitForQueueFinish(admin.accessToken, 'thumbnailGeneration');
+
+      const onlineAssets = await utils.getAllAssets(admin.accessToken);
+      console.log(onlineAssets);
+      // expect(onlineAssets.length).toBeGreaterThan(1);
+      // console.log(onlineAssets)
+
+      utils.deleteTempFolder();
+
+      await scan(admin.accessToken, library.id);
+      await utils.waitForQueueFinish(admin.accessToken, 'library');
+
+      const assets = await utils.getAllAssets(admin.accessToken);
+      console.log(assets);
+
+      expect(assets).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            isOffline: true,
+            originalFileName: 'el_torcal_rocks.jpg',
+          }),
+          expect.objectContaining({
+            isOffline: true,
+            originalFileName: 'tanners_ridge.jpg',
+          }),
+        ]),
+      );
+    });
   });
 
   describe('POST /library/:id/removeOffline', () => {
@@ -606,6 +560,95 @@ describe('/library', () => {
         isValid: false,
         message: `Not a directory`,
       });
+    });
+  });
+
+  describe('DELETE /library/:id', () => {
+    it('should require authentication', async () => {
+      const { status, body } = await request(app).delete(`/library/${uuidDto.notFound}`);
+
+      expect(status).toBe(401);
+      expect(body).toEqual(errorDto.unauthorized);
+    });
+
+    it('should not delete the last upload library', async () => {
+      const libraries = await getAllLibraries(
+        { $type: LibraryType.Upload },
+        { headers: asBearerAuth(admin.accessToken) },
+      );
+
+      const adminLibraries = libraries.filter((library) => library.ownerId === admin.userId);
+      expect(adminLibraries.length).toBeGreaterThanOrEqual(1);
+      const lastLibrary = adminLibraries.pop() as LibraryResponseDto;
+
+      // delete all but the last upload library
+      for (const library of adminLibraries) {
+        const { status } = await request(app)
+          .delete(`/library/${library.id}`)
+          .set('Authorization', `Bearer ${admin.accessToken}`);
+        expect(status).toBe(204);
+      }
+
+      const { status, body } = await request(app)
+        .delete(`/library/${lastLibrary.id}`)
+        .set('Authorization', `Bearer ${admin.accessToken}`);
+
+      expect(body).toEqual(errorDto.noDeleteUploadLibrary);
+      expect(status).toBe(400);
+    });
+
+    it('should delete an external library', async () => {
+      const library = await utils.createLibrary(admin.accessToken, {
+        ownerId: admin.userId,
+        type: LibraryType.External,
+      });
+
+      const { status, body } = await request(app)
+        .delete(`/library/${library.id}`)
+        .set('Authorization', `Bearer ${admin.accessToken}`);
+
+      expect(status).toBe(204);
+      expect(body).toEqual({});
+
+      const libraries = await getAllLibraries({}, { headers: asBearerAuth(admin.accessToken) });
+      expect(libraries).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: library.id,
+          }),
+        ]),
+      );
+    });
+
+    it('should delete an external library with assets', async () => {
+      const library = await utils.createLibrary(admin.accessToken, {
+        ownerId: admin.userId,
+        type: LibraryType.External,
+        importPaths: [`${testAssetDirInternal}/temp`],
+      });
+
+      await scan(admin.accessToken, library.id);
+      await utils.waitForWebsocketEvent({ event: 'assetUpload', total: 2 });
+
+      const { status, body } = await request(app)
+        .delete(`/library/${library.id}`)
+        .set('Authorization', `Bearer ${admin.accessToken}`);
+
+      expect(status).toBe(204);
+      expect(body).toEqual({});
+
+      const libraries = await getAllLibraries({}, { headers: asBearerAuth(admin.accessToken) });
+      expect(libraries).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: library.id,
+          }),
+        ]),
+      );
+
+      // ensure no files get deleted
+      expect(existsSync(`${testAssetDir}/temp/directoryA/assetA.png`)).toBe(true);
+      expect(existsSync(`${testAssetDir}/temp/directoryB/assetB.png`)).toBe(true);
     });
   });
 });
