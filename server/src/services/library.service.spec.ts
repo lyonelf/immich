@@ -816,6 +816,7 @@ describe(LibraryService.name, () => {
           }),
         );
 
+        expect(storageMock.watch).not.toHaveBeenCalled();
         expect(libraryMock.create).toHaveBeenCalledWith(
           expect.objectContaining({
             name: expect.any(String),
@@ -846,6 +847,7 @@ describe(LibraryService.name, () => {
           }),
         );
 
+        expect(storageMock.watch).not.toHaveBeenCalled();
         expect(libraryMock.create).toHaveBeenCalledWith(
           expect.objectContaining({
             name: 'My Awesome Library',
@@ -876,6 +878,7 @@ describe(LibraryService.name, () => {
           }),
         );
 
+        expect(storageMock.watch).not.toHaveBeenCalled();
         expect(libraryMock.create).toHaveBeenCalledWith(
           expect.objectContaining({
             name: expect.any(String),
@@ -910,6 +913,7 @@ describe(LibraryService.name, () => {
           }),
         );
 
+        expect(storageMock.watch).not.toHaveBeenCalled();
         expect(libraryMock.create).toHaveBeenCalledWith(
           expect.objectContaining({
             name: expect.any(String),
@@ -932,6 +936,7 @@ describe(LibraryService.name, () => {
           ownerId: authStub.admin.user.id,
           type: LibraryType.EXTERNAL,
           importPaths: libraryStub.externalLibraryWithImportPaths1.importPaths,
+          isWatched: true,
         });
 
         expect(storageMock.watch).toHaveBeenCalledWith(
@@ -964,6 +969,7 @@ describe(LibraryService.name, () => {
           }),
         );
 
+        expect(storageMock.watch).not.toHaveBeenCalled();
         expect(libraryMock.create).toHaveBeenCalledWith(
           expect.objectContaining({
             name: expect.any(String),

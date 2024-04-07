@@ -284,7 +284,7 @@ export class LibraryService extends EventEmitter {
 
     this.logger.log(`Creating ${dto.type} library for ${dto.ownerId}}`);
 
-    if (dto.type === LibraryType.EXTERNAL) {
+    if (dto.type === LibraryType.EXTERNAL && dto.isWatched) {
       await this.watch(library.id);
     }
 
